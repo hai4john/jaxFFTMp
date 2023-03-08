@@ -30,9 +30,9 @@ def _rfft3d_abstract(cuda_plan, global_shape, cell_data):
     dtype = dtypes.canonicalize_dtype(cuda_plan.dtype)
     assert dtypes.canonicalize_dtype(global_shape.dtype) == dtype
     assert global_shape.shape == shape
-    # return (ShapedArray(shape, dtype), ShapedArray(shape, dtype))
-    ret = cuda_plan.update()
-    return ret
+    return (ShapedArray(shape, dtype), ShapedArray(shape, dtype))
+    # ret = cuda_plan.update()
+    # return ret
 @trace("_rfft3d_lowering")
 def _rfft3d_lowering(ctx, mean_anom, ecc, cell_data):
     print("+++++++++call _rfft3d_lowering+++++++++")
@@ -42,7 +42,7 @@ def _rfft3d_lowering(ctx, mean_anom, ecc, cell_data):
 
     # Extract the numpy type of the inputs
     mean_anom_aval, _, _ = ctx.avals_in
-    (aval_out,) = ctx.avals_out
+    (aval_out, _,) = ctx.avals_out
 
     # The inputs and outputs all have the same shape and memory layout
     # so let's predefine this specification
@@ -58,25 +58,25 @@ def _rfft3d_lowering(ctx, mean_anom, ecc, cell_data):
     # dimension using the 'opaque' parameter
     # opaque = 100
 
-    result = custom_call(
+    return custom_call(
         op_name,
         # Output types
-        out_types=[dtype],
+        out_types=[dtype, dtype],
         # The inputs:
         operands=[mean_anom, ecc, cell_data],
         # Layout specification:
         operand_layouts=[layout, layout, layout],
-        result_layouts=[layout],
+        result_layouts=[layout, layout],
         has_side_effect=True,
         # GPU specific additional data
         # backend_config=opaque
     )
 
-    return mhlo.ReshapeOp(mlir.aval_to_ir_type(aval_out), result).results
+    # return mhlo.ReshapeOp(mlir.aval_to_ir_type(aval_out), result).results
 
 # Defining new JAX primitives
 rfft3d_p = core.Primitive("rfft3d")  # Create the primitive
-# rfft3d_p.multiple_results = True
+rfft3d_p.multiple_results = True
 rfft3d_p.def_impl(partial(xla.apply_primitive, rfft3d_p))
 rfft3d_p.def_abstract_eval(_rfft3d_abstract)
 
