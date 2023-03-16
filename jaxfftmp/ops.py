@@ -1,77 +1,69 @@
 
-from functools import partial, reduce
-import jax
+from functools import partial
 from jax import core
-from jax._src import abstract_arrays
 from jax._src.lib import xla_client
-from jax.interpreters import ad, batching, mlir, xla
+from jax.interpreters import mlir, xla
 from jaxlib.mhlo_helpers import custom_call
-from jax.interpreters import ad
+
 from jax._src.lib.mlir.dialects import mhlo
 
 from .util import trace
-from jax.abstract_arrays import ShapedArray
 from . import _cufftMp
 
 from jax import dtypes
 from jax.abstract_arrays import ShapedArray
 
 for name, fn in _cufftMp.registrations().items():
-  xla_client.register_custom_call_target(name, fn, platform="gpu")
+  xla_client.register_custom_call_target(name, fn, platform="cpu")
 
 @trace("rfft3d_prim")
-def rfft3d_prim(cuda_plan, global_shape, cell_data):
-# def rfft3d_prim(cuda_plan, global_shape, cell_data, mpi_rank, mpi_size):
-    return rfft3d_p.bind(cuda_plan, global_shape, cell_data)
+def rfft3d_prim(fft_plan, global_shape, cell_data, mpi_rank, mpi_size):
+    return rfft3d_p.bind(fft_plan, global_shape, cell_data, mpi_rank, mpi_size)
 
-def _rfft3d_abstract(cuda_plan, global_shape, cell_data):
-# def _rfft3d_abstract(cuda_plan, global_shape, cell_data, mpi_rank, mpi_size):
-    shape = cuda_plan.shape
-    dtype = dtypes.canonicalize_dtype(cuda_plan.dtype)
-    assert dtypes.canonicalize_dtype(global_shape.dtype) == dtype
-    assert global_shape.shape == shape
+def _rfft3d_abstract(fft_plan, global_shape, cell_data, mpi_rank, mpi_size):
+    shape = fft_plan.shape
+    dtype = dtypes.canonicalize_dtype(fft_plan.dtype)
     return (ShapedArray(shape, dtype), ShapedArray(shape, dtype))
-    # ret = cuda_plan.update()
-    # return ret
-@trace("_rfft3d_lowering")
-def _rfft3d_lowering(ctx, mean_anom, ecc, cell_data):
-    print("+++++++++call _rfft3d_lowering+++++++++")
-    # nd3 = jax.random.normal(shape=[5], key=jax.random.PRNGKey(0))
-    # ecc = jax.random.normal(shape=[5], key=jax.random.PRNGKey(0))
-    # return nd3,  ecc
 
-    # Extract the numpy type of the inputs
-    mean_anom_aval, _, _ = ctx.avals_in
-    (aval_out, _,) = ctx.avals_out
+@trace("_rfft3d_lowering")
+def _rfft3d_lowering(ctx, fft_plan, global_shape, cell_data, mpi_rank, mpi_size):
+    print("+++++++++call _rfft3d_lowering+++++++++")
+    aval_in, _, _, _, _ = ctx.avals_in
+    (aval_out, _) = ctx.avals_out
 
     # The inputs and outputs all have the same shape and memory layout
-    # so let's predefine this specification
-    dtype = mlir.ir.RankedTensorType(mean_anom.type)
+    dtype = mlir.ir.RankedTensorType(fft_plan.type)
     dims = dtype.shape
-    layout = tuple(range(len(dims) - 1, -1, -1))
+    plan_layout = tuple(range(len(dims) - 1, -1, -1))
 
+    global_dtype = mlir.ir.RankedTensorType(global_shape.type)
+    dims = global_dtype.shape
+    global_layout = tuple(range(len(dims) - 1, -1, -1))
 
-    # We dispatch a different call depending on the dtype
-    op_name = 'rfft3d_wrapper'
+    cell_dtype = mlir.ir.RankedTensorType(cell_data.type)
+    dims = cell_dtype.shape
+    cell_layout = tuple(range(len(dims) - 1, -1, -1))
 
-    # On the GPU, we do things a little differently and encapsulate the
-    # dimension using the 'opaque' parameter
-    # opaque = 100
+    dtype = mlir.ir.RankedTensorType(mpi_rank.type)
+    dims = dtype.shape
+    rank_layout = tuple(range(len(dims) - 1, -1, -1))
+
+    dtype = mlir.ir.RankedTensorType(mpi_size.type)
+    dims = dtype.shape
+    size_layout = tuple(range(len(dims) - 1, -1, -1))
 
     return custom_call(
-        op_name,
+        'rfft3d_wrapper',
         # Output types
         out_types=[dtype, dtype],
         # The inputs:
-        operands=[mean_anom, ecc, cell_data],
+        operands=[fft_plan, global_shape, cell_data, mpi_rank, mpi_size],
         # Layout specification:
-        operand_layouts=[layout, layout, layout],
-        result_layouts=[layout, layout],
-        has_side_effect=True,
+        operand_layouts=[plan_layout, global_layout, cell_layout, rank_layout, size_layout],
+        result_layouts=[plan_layout, plan_layout],
         # GPU specific additional data
         # backend_config=opaque
     )
-
     # return mhlo.ReshapeOp(mlir.aval_to_ir_type(aval_out), result).results
 
 # Defining new JAX primitives
@@ -84,4 +76,55 @@ rfft3d_p.def_abstract_eval(_rfft3d_abstract)
 mlir.register_lowering(
         rfft3d_p,
         _rfft3d_lowering,
-        platform='gpu')
+        platform='cpu')
+
+
+# +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+@trace("irfft3d_prim")
+def irfft3d_prim(fft_plan, desc):
+    return irfft3d_p.bind(fft_plan, desc)
+
+def _irfft3d_abstract(fft_plan, desc):
+    shape = fft_plan.shape
+    dtype = dtypes.canonicalize_dtype(fft_plan.dtype)
+    return (ShapedArray(shape, dtype), ShapedArray(shape, dtype))
+
+@trace("_irfft3d_lowering")
+def _irfft3d_lowering(ctx, fft_plan, desc):
+    print("+++++++++call _irfft3d_lowering+++++++++")
+    aval_in, _ = ctx.avals_in
+    (aval_out, _) = ctx.avals_out
+
+    # The inputs and outputs all have the same shape and memory layout
+    dtype = mlir.ir.RankedTensorType(fft_plan.type)
+    dims = dtype.shape
+    plan_layout = tuple(range(len(dims) - 1, -1, -1))
+
+    desc_dtype = mlir.ir.RankedTensorType(desc.type)
+    dims = desc_dtype.shape
+    desc_layout = tuple(range(len(dims) - 1, -1, -1))
+
+    return custom_call(
+        'irfft3d_wrapper',
+        # Output types
+        out_types=[dtype, dtype],
+        # The inputs:
+        operands=[fft_plan, desc],
+        # Layout specification:
+        operand_layouts=[plan_layout, desc_layout],
+        result_layouts=[plan_layout, plan_layout],
+        # GPU specific additional data
+        # backend_config=opaque
+    )
+    # return mhlo.ReshapeOp(mlir.aval_to_ir_type(aval_out), result).results
+
+# Defining new JAX primitives
+irfft3d_p = core.Primitive("irfft3d")  # Create the primitive
+irfft3d_p.multiple_results = True
+irfft3d_p.def_impl(partial(xla.apply_primitive, irfft3d_p))
+irfft3d_p.def_abstract_eval(_irfft3d_abstract)
+
+mlir.register_lowering(
+        irfft3d_p,
+        _irfft3d_lowering,
+        platform='cpu')

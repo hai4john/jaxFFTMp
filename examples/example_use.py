@@ -1,39 +1,61 @@
 
 import sys
-sys.path.append("/home/john/works/pcl_cosmos/proj/jaxFTTMp")   # Temporary settings in the development environment
+sys.path.append("/home/john/works/pcl_cosmos/proj/jaxFFTMp")   # Temporary settings in the development environment
 
+from mpi4py import MPI
+import jax
 import jaxfftmp as jf
 import numpy as np
-import jax.numpy as jnp
-from jax import dtypes
-from jax.abstract_arrays import ShapedArray
+from numpy.testing import assert_allclose
 
-from jax._src import api
+def example_main():
+    jax.config.update('jax_platform_name', 'cpu')
 
-typeExample = jf.CUFFT_R2C
-stream = jf.init_stream()
-print(typeExample)
-print(stream)
-jf.free_stream(stream)
+    comm = MPI.COMM_WORLD
+    rank = comm.Get_rank()
+    size = comm.Get_size()
+    print(rank, size)
 
-print("\nNormal evaluation:")
-plan = 123456
-global_shape = 256 #np.array([256,] *3)
-cell_data = 100
-mpi_rank = 1
-mpi_size = 8
+    nX = 1024
+    nY = 1024
+    nZ = 1024
+    print("-------1-------")
+    stream = jf.init_stream()
+    print("-------2-------")
+    plan_r2c = jf.init_plan(stream, nX, nY, nZ, jf.CUFFT_R2C)
+    plan_c2r = jf.init_plan(stream, nX, nY, nZ, jf.CUFFT_C2R)
+    print("-------3-------")
+    global_shape = np.array([nX, nY, nZ])
 
-nd3 =np.random.random(5)
-ecc = np.random.randn(5)
-# dtype = dtypes.canonicalize_dtype(cell_data.dtype)
-# shapedarr = ShapedArray(cell_data.shape, dtype)
-jf.rfft3d_prim(nd3, ecc, ecc)
-# print("rfft3d = ", jf.rfft3d_prim(plan, global_shape, cell_data, mpi_rank, mpi_size))
+    # Initialize an array with the expected gobal size
+    array = jax.random.normal(shape=[nX // size,
+                                     nY,
+                                     nZ],
+                              key=jax.random.PRNGKey(rank)).astype('complex64')
+    print("-------4-------")
+    # Forward FFT, note that the output FFT is transposed
+    desc = jf.rfft3d_prim(plan_r2c, global_shape, array, rank, size)
+    desc = 123456   # after work, must remark
 
-# print("\nJit evaluation:")
-# print("jit(irfft3d_prim) = ", api.jit(jf.irfft3d_prim)(2.0, 10., 10.))
+    # Reverse FFT
+    rec_array = jf.irfft3d_prim(plan_c2r, desc)
 
+    assert_allclose(array, rec_array, rtol=1e-10, atol=1e-10)
 
+    '''
+    # print("\nJit evaluation:")
+    # print("jit(irfft3d_prim) = ", api.jit(jf.irfft3d_prim)(2.0, 10., 10.))
 
-# print("\nGradient evaluation:")
-# print("grad(square_add_numpy) = ", api.grad(jf.irfft3d_prim)(2.0, 10., 10.))
+    # print("\nGradient evaluation:")
+    # print("grad(square_add_numpy) = ", api.grad(jf.irfft3d_prim)(2.0, 10., 10.))
+    '''
+
+    jf.free_desc(desc)
+
+    jf.free_plan(plan_c2r)
+    jf.free_plan(plan_r2c)
+
+    jf.free_stream(stream)
+
+if __name__ == '__main__':
+    example_main()
